@@ -1,27 +1,5 @@
 #!/usr/bin/env python3
-"""
-Assignment 3 - Milestone 1
-Inverted index construction for the Developer corpus.
 
-This is a standalone Assignment 3 program. It reuses only general ideas/code
-from Assignment 2 where appropriate:
-  - BeautifulSoup HTML parsing
-  - regular-expression token extraction
-  - URL fragment removal with urldefrag
-
-The Assignment 2 crawler/frontier/worker code and its stop-word filtering are
-NOT reused here.
-
-Milestone 1 requirements implemented:
-  - tokens are alphanumeric sequences
-  - no stop-word removal
-  - Porter stemming
-  - important text: title, h1, h2, h3, b, strong
-  - inverted index with [document_id, term_frequency] postings
-  - disk flushing into multiple partial indexes
-  - merge of partial indexes into one final filesystem index
-  - document count, unique token count, and index size reporting
-"""
 
 import argparse
 import json
@@ -56,7 +34,7 @@ def parse_page(page_path, stemmer):
         url, normal text token counts, important token counts
 
     The crawler JSON format contains url, content, and encoding.
-    Broken HTML is handled by BeautifulSoup as gracefully as possible.
+    Broken HTML is handled by BeautifulSoup
     """
     try:
         with page_path.open("r", encoding="utf-8", errors="replace") as f:
@@ -131,9 +109,9 @@ def merge_partials(partial_paths, final_path):
     """
     Merge all partial JSONL indexes into one sorted JSONL index.
 
-    This merge is intentionally performed term-by-term so the final index
-    remains a filesystem artifact instead of requiring the whole final index
-    to be loaded into memory.
+    This merge is intentionally performed term by term so the final index
+    remains a filesystem artifact instead of needing the whole final index
+    to be loaded into memory
     """
     merged_terms = defaultdict(dict)
 
