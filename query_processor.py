@@ -1,5 +1,7 @@
 from nltk.stem import PorterStemmer
+
 from indexer import tokenize, stem_tokens
+from index_retriever import IndexRetriever
 
 def process_query(query):
     stemmer = PorterStemmer()
@@ -9,6 +11,16 @@ def process_query(query):
     
     return stemmed_tokens
 
+
+def retrieve_query_results(query):
+    stemmed_tokens = process_query(query)
+
+    retriever = IndexRetriever("index_data/index.jsonl")
+
+    posting_lists = retriever.get_postings_for_terms(stemmed_tokens)
+
+    return boolean_and(posting_lists)
+    
 
 def boolean_and(posting_lists):
     if not posting_lists:
