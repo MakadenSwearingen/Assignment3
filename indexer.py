@@ -3,15 +3,21 @@
 
 import argparse
 import json
+import math
 import re
 import shutil
+import warnings
 from collections import Counter, defaultdict
 from pathlib import Path
 from time import perf_counter
 from urllib.parse import urldefrag
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
 from nltk.stem import PorterStemmer
+
+# Some crawled pages are XML (feeds, sitemaps). html.parser still extracts
+# their text fine, so the warning is just noise.
+warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 
 
 TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
@@ -105,13 +111,27 @@ def write_partial_index(index, output_path):
             )
 
 
-def merge_partials(partial_paths, final_path):
+def document_norm(term_counts):
+    """
+    Return the lnc vector length of one document:
+        sqrt(sum over terms of (1 + log10(tf))^2)
+
+    Stored per document so search can do cosine normalization without
+    scanning every posting in the index.
+    """
+    return math.sqrt(
+        sum((1 + math.log10(tf)) ** 2 for tf in term_counts.values())
+    )
+
+
+def merge_partials(partial_paths, final_path, lexicon_path):
     """
     Merge all partial JSONL indexes into one sorted JSONL index.
 
-    This merge is intentionally performed term by term so the final index
-    remains a filesystem artifact instead of needing the whole final index
-    to be loaded into memory
+    While writing the final index, the byte offset where each term's line
+    starts is recorded in a lexicon (term -> offset). The search component
+    loads only this lexicon and seeks into the index file for postings,
+    so it never has to load the inverted index itself into memory.
     """
     merged_terms = defaultdict(dict)
 
@@ -126,25 +146,40 @@ def merge_partials(partial_paths, final_path):
                         merged_terms[term].get(int(doc_id), 0) + int(tf)
                     )
 
-    with final_path.open("w", encoding="utf-8") as f:
+    lexicon = {}
+
+    # Binary mode so byte offsets are exact (text mode on Windows would
+    # silently turn "\n" into "\r\n" and shift every offset).
+    with final_path.open("wb") as f:
         for term in sorted(merged_terms):
             postings = [
                 [doc_id, tf]
                 for doc_id, tf in sorted(merged_terms[term].items())
             ]
-            f.write(
-                json.dumps(
-                    {"term": term, "postings": postings},
-                    separators=(",", ":"),
-                )
-                + "\n"
-            )
+            lexicon[term] = f.tell()
+            line = json.dumps(
+                {"term": term, "postings": postings},
+                separators=(",", ":"),
+            ) + "\n"
+            f.write(line.encode("utf-8"))
+
+    with lexicon_path.open("w", encoding="utf-8") as f:
+        json.dump(lexicon, f, separators=(",", ":"))
 
     return len(merged_terms)
 
 
 def index_corpus(corpus_dir, output_dir, flush_docs=5000, clean=False):
-    """Build the Milestone 1 inverted index."""
+    """
+    Build the inverted index on disk.
+
+    Output files in output_dir:
+        index.jsonl      one line per term: {"term", "postings": [[doc_id, tf]]}
+        lexicon.json     term -> byte offset of its line in index.jsonl
+        documents.jsonl  one line per doc: {"doc_id", "url", "norm"}
+        metadata.json    index statistics for the report
+        partials/        partial indexes flushed during construction
+    """
     corpus_dir = Path(corpus_dir)
     output_dir = Path(output_dir)
 
@@ -194,7 +229,11 @@ def index_corpus(corpus_dir, output_dir, flush_docs=5000, clean=False):
 
             documents_file.write(
                 json.dumps(
-                    {"doc_id": doc_id, "url": url},
+                    {
+                        "doc_id": doc_id,
+                        "url": url,
+                        "norm": round(document_norm(term_counts), 6),
+                    },
                     separators=(",", ":"),
                 )
                 + "\n"
@@ -232,7 +271,10 @@ def index_corpus(corpus_dir, output_dir, flush_docs=5000, clean=False):
         )
 
     final_index_path = output_dir / "index.jsonl"
-    unique_tokens = merge_partials(partial_paths, final_index_path)
+    lexicon_path = output_dir / "lexicon.json"
+    unique_tokens = merge_partials(
+        partial_paths, final_index_path, lexicon_path
+    )
 
     # Calculate the final index size in KB.
     index_size_kb = final_index_path.stat().st_size / 1024.0
@@ -240,7 +282,6 @@ def index_corpus(corpus_dir, output_dir, flush_docs=5000, clean=False):
     elapsed = perf_counter() - start
 
     metadata = {
-        "milestone": 1,
         "documents_indexed": document_count,
         "documents_skipped": skipped_count,
         "unique_tokens": unique_tokens,
@@ -248,13 +289,15 @@ def index_corpus(corpus_dir, output_dir, flush_docs=5000, clean=False):
         "partial_indexes": len(partial_paths),
         "flush_docs": flush_docs,
         "index_file": str(final_index_path),
+        "lexicon_file": str(lexicon_path),
+        "documents_file": str(documents_path),
     }
 
     with (output_dir / "metadata.json").open("w", encoding="utf-8") as f:
         json.dump(metadata, f, indent=2)
 
     print()
-    print("===== MILESTONE 1 COMPLETE =====")
+    print("===== INDEXING COMPLETE =====")
     print(f"Indexed documents    : {document_count}")
     print(f"Skipped documents    : {skipped_count}")
     print(f"Unique stemmed tokens: {unique_tokens}")
@@ -262,6 +305,7 @@ def index_corpus(corpus_dir, output_dir, flush_docs=5000, clean=False):
     print(f"Partial indexes      : {len(partial_paths)}")
     print(f"Processing time (s)  : {elapsed:.2f}")
     print(f"Final index          : {final_index_path}")
+    print(f"Lexicon (offsets)    : {lexicon_path}")
     print()
 
     return metadata
@@ -269,7 +313,7 @@ def index_corpus(corpus_dir, output_dir, flush_docs=5000, clean=False):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Build the Assignment 3 Milestone 1 inverted index."
+        description="Build the Assignment 3 inverted index."
     )
     parser.add_argument(
         "corpus",

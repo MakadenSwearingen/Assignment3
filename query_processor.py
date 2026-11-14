@@ -1,43 +1,37 @@
 from nltk.stem import PorterStemmer
 
 from indexer import tokenize, stem_tokens
-from index_retriever import IndexRetriever
+
+# Same tokenizer and stemmer as the indexer, so query terms match index terms.
+_STEMMER = PorterStemmer()
+
 
 def process_query(query):
-    stemmer = PorterStemmer()
-    
-    tokenized = tokenize(query)
-    stemmed_tokens = stem_tokens(tokenized, stemmer)
-    
-    return stemmed_tokens
+    """Turn a raw query string into a list of lowercase, stemmed tokens."""
+    return stem_tokens(tokenize(query), _STEMMER)
 
-
-def retrieve_query_results(query):
-    stemmed_tokens = process_query(query)
-
-    retriever = IndexRetriever("index_data/index.jsonl")
-
-    posting_lists = retriever.get_postings_for_terms(stemmed_tokens)
-
-    return boolean_and(posting_lists)
-    
 
 def boolean_and(posting_lists):
+    """
+    Return the sorted doc_ids that appear in every posting list.
+
+    Intersects starting from the shortest list so the working set stays
+    as small as possible.
+    """
     if not posting_lists:
         return []
 
-    # Extract document IDs from the first posting list
-    doc_ids = {doc_id for doc_id, tf in posting_lists[0]}
+    ordered = sorted(posting_lists, key=len)
 
-    # Iterate through the remaining posting lists
-    for x in range(1, len(posting_lists)):
-        current_ids = {doc_id for doc_id, tf in posting_lists[x]}
+    # Extract document IDs from the shortest posting list
+    doc_ids = {doc_id for doc_id, _tf in ordered[0]}
 
-        # Find the intersection of document IDs
-        doc_ids = doc_ids & current_ids
+    # Intersect with each remaining posting list
+    for postings in ordered[1:]:
+        doc_ids &= {doc_id for doc_id, _tf in postings}
 
-        # Check if empty
+        # Stop early once nothing can match
         if not doc_ids:
             return []
-    
+
     return sorted(doc_ids)
